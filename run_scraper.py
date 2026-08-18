@@ -2,6 +2,8 @@ import os
 import sys
 import subprocess
 import time
+import csv
+import io
 
 # Force stdout to UTF-8 for Windows console support
 if hasattr(sys.stdout, 'reconfigure'):
@@ -10,6 +12,7 @@ if hasattr(sys.stdout, 'reconfigure'):
 QUERIES_FILE = "queries.txt"
 COMPLETED_FILE = "completed_queries.txt"
 RESULTS_FILE = "results.csv"
+MAX_LEADS_PER_QUERY = 30
 
 def check_results_file_unlocked():
     if not os.path.exists(RESULTS_FILE):
@@ -21,10 +24,10 @@ def check_results_file_unlocked():
     except PermissionError:
         return False
 
-def append_stdout_results_into_master(stdout_data):
+def append_stdout_results_into_master(stdout_data, query):
     """
-    Safely parses CSV output from scraper stdout in memory and 
-    appends all new leads into master results.csv without EVER truncating results.csv.
+    Safely parses CSV output from scraper stdout in memory, takes up to MAX 30 leads per query,
+    prints each added lead name cleanly to terminal, and appends into master results.csv.
     """
     if not stdout_data:
         return 0
@@ -34,8 +37,33 @@ def append_stdout_results_into_master(stdout_data):
     if not lines:
         return 0
 
-    header = lines[0]
+    header_line = lines[0]
     data_rows = lines[1:]
+
+    if not data_rows:
+        return 0
+
+    # Cap at maximum 30 leads per query
+    data_rows = data_rows[:MAX_LEADS_PER_QUERY]
+
+    # Detect title column index in CSV header (default index 2)
+    title_idx = 2
+    try:
+        reader = csv.reader(io.StringIO(header_line))
+        header_fields = next(reader)
+        if "title" in header_fields:
+            title_idx = header_fields.index("title")
+    except Exception:
+        pass
+
+    # Print each added lead cleanly to terminal
+    for row_line in data_rows:
+        try:
+            row_fields = next(csv.reader(io.StringIO(row_line)))
+            lead_name = row_fields[title_idx] if title_idx < len(row_fields) else "Unknown"
+        except Exception:
+            lead_name = "Unknown"
+        print(f"  + New lead name added for query \"{query}\": {lead_name}")
 
     # Check if master results.csv exists and has content
     master_exists = os.path.exists(RESULTS_FILE) and os.path.getsize(RESULTS_FILE) > 0
@@ -43,7 +71,7 @@ def append_stdout_results_into_master(stdout_data):
     lines_to_append = []
     if not master_exists:
         # Write header first, then data rows
-        lines_to_append = [header] + data_rows
+        lines_to_append = [header_line] + data_rows
     else:
         # Append data rows only (skip duplicate header)
         lines_to_append = data_rows
@@ -125,8 +153,8 @@ def main():
                 errors="replace"
             )
 
-            # Safely merge leads into master results.csv directly from stdout
-            added_count = append_stdout_results_into_master(proc.stdout)
+            # Safely merge up to 30 leads into master results.csv directly from stdout
+            added_count = append_stdout_results_into_master(proc.stdout, query)
 
             if added_count > 0:
                 mark_completed(query)
