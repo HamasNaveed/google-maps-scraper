@@ -111,7 +111,6 @@ def main():
             "-input", "stdin",
             "-results", "stdout",
             "-depth", "2",
-            "-email",
             "-exit-on-inactivity", "1m"
         ]
 
