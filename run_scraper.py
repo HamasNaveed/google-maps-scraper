@@ -138,6 +138,8 @@ def main():
             ".\\google_maps_scraper.exe",
             "-input", "stdin",
             "-results", "stdout",
+            "-c", "4",
+            "-pages-per-browser", "4",
             "-depth", "2",
             "-exit-on-inactivity", "1m"
         ]
