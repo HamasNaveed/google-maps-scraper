@@ -13,16 +13,19 @@ import json
 import re
 import subprocess
 import sys
+import warnings
 import xml.etree.ElementTree as ET
 from email.utils import parseaddr
 from urllib.parse import urljoin, urlparse
 
 import phonenumbers
 import requests
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, XMLParsedAsHTMLWarning
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
+
+warnings.filterwarnings("ignore", category=XMLParsedAsHTMLWarning)
 
 SCRAPER_EXE = ".\\google_maps_scraper.exe"
 
