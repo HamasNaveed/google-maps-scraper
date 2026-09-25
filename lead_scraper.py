@@ -1,7 +1,8 @@
 """
 Lead scraper: given a country, city, and search term (service), finds businesses via the
-bundled google_maps_scraper.exe, then crawls each business's website (homepage + contact/
-about/footer-linked pages) to collect as many emails and phone numbers as possible.
+bundled google_maps_scraper.exe, then crawls each business's website (homepage, contact/
+about/footer-linked pages, sitemap.xml, robots.txt, and llms.txt/llm.txt) to collect as
+many emails and phone numbers as possible.
 
 Output CSV columns: Business Name, Website, Emails, Mobile Numbers.
 """
@@ -12,6 +13,7 @@ import json
 import re
 import subprocess
 import sys
+import xml.etree.ElementTree as ET
 from email.utils import parseaddr
 from urllib.parse import urljoin, urlparse
 
@@ -45,7 +47,11 @@ REQUEST_HEADERS = {
 }
 REQUEST_TIMEOUT = 8
 MAX_EXTRA_PAGES = 4
+MAX_SITEMAP_URLS = 5
+MAX_LLMS_URLS = 3
 MAX_WORKERS = 5
+
+LLM_FILE_NAMES = ("llms.txt", "llm.txt")
 
 
 def run_maps_scraper(query: str, max_results: int) -> list[dict]:
@@ -170,6 +176,88 @@ def find_contact_links(soup: BeautifulSoup, base_url: str) -> list[str]:
     return list(links)[:MAX_EXTRA_PAGES]
 
 
+def parse_sitemap_urls(xml_text: str, base_domain: str, _depth: int = 0) -> list[str]:
+    """Parses a sitemap.xml (urlset) or sitemap index, returning same-domain page URLs."""
+    if _depth > 1:
+        return []
+
+    try:
+        root = ET.fromstring(xml_text)
+    except ET.ParseError:
+        return []
+
+    tag = root.tag.rsplit("}", 1)[-1]
+    locs = [
+        el.text.strip()
+        for el in root.iter()
+        if el.tag.rsplit("}", 1)[-1] == "loc" and el.text
+    ]
+
+    if tag == "sitemapindex":
+        # Nested sitemap index: fetch a couple of child sitemaps and recurse.
+        pages = []
+        for loc in locs[:2]:
+            resp = fetch(loc)
+            if resp is not None:
+                pages.extend(parse_sitemap_urls(resp.text, base_domain, _depth + 1))
+        return pages
+
+    return [loc for loc in locs if urlparse(loc).netloc == base_domain]
+
+
+def discover_sitemap_links(base_url: str) -> tuple[list[str], str]:
+    base_domain = urlparse(base_url).netloc
+    sitemap_urls = [urljoin(base_url, "/sitemap.xml")]
+
+    robots_text = ""
+    robots = fetch(urljoin(base_url, "/robots.txt"))
+    if robots is not None:
+        robots_text = robots.text
+        for line in robots.text.splitlines():
+            if line.lower().startswith("sitemap:"):
+                sitemap_urls.append(line.split(":", 1)[1].strip())
+
+    pages: list[str] = []
+    for sitemap_url in dict.fromkeys(sitemap_urls):
+        resp = fetch(sitemap_url)
+        if resp is None:
+            continue
+        pages.extend(parse_sitemap_urls(resp.text, base_domain))
+
+    contact_pages = [p for p in pages if any(k in p.lower() for k in CONTACT_KEYWORDS)]
+    ordered = contact_pages + [p for p in pages if p not in contact_pages]
+
+    seen = set()
+    unique = []
+    for p in ordered:
+        if p not in seen:
+            seen.add(p)
+            unique.append(p)
+
+    return unique[:MAX_SITEMAP_URLS], robots_text
+
+
+LLMS_LINK_REGEX = re.compile(r"https?://[^\s\)\]\"'<>]+")
+
+
+def discover_llms_txt(base_url: str) -> tuple[str, list[str]]:
+    """Fetches llms.txt/llm.txt if present, returning its raw text and any same-domain links."""
+    base_domain = urlparse(base_url).netloc
+
+    for name in LLM_FILE_NAMES:
+        resp = fetch(urljoin(base_url, f"/{name}"))
+        if resp is None:
+            continue
+
+        links = [
+            link for link in LLMS_LINK_REGEX.findall(resp.text)
+            if urlparse(link).netloc == base_domain
+        ]
+        return resp.text, links[:MAX_LLMS_URLS]
+
+    return "", []
+
+
 def crawl_website(url: str, region: str | None) -> tuple[set[str], set[str]]:
     emails: set[str] = set()
     phones: set[str] = set()
@@ -182,7 +270,23 @@ def crawl_website(url: str, region: str | None) -> tuple[set[str], set[str]]:
     emails |= extract_emails(home.text, soup)
     phones |= extract_phones(home.text, soup, region)
 
-    for link in find_contact_links(soup, home.url):
+    to_visit = set(find_contact_links(soup, home.url))
+
+    sitemap_links, robots_text = discover_sitemap_links(home.url)
+    to_visit |= set(sitemap_links)
+
+    empty_soup = BeautifulSoup("", "html.parser")
+    if robots_text:
+        emails |= extract_emails(robots_text, empty_soup)
+        phones |= extract_phones(robots_text, empty_soup, region)
+
+    llms_text, llms_links = discover_llms_txt(home.url)
+    if llms_text:
+        emails |= extract_emails(llms_text, empty_soup)
+        phones |= extract_phones(llms_text, empty_soup, region)
+    to_visit |= set(llms_links)
+
+    for link in to_visit:
         resp = fetch(link)
         if resp is None:
             continue
