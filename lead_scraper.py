@@ -10,6 +10,7 @@ import argparse
 import concurrent.futures
 import csv
 import json
+import os
 import re
 import subprocess
 import sys
@@ -368,12 +369,15 @@ def main():
             results.append(row)
             print(f"  [{i}/{len(entries)}] {row['Business Name']}")
 
-    with open(args.output, "w", newline="", encoding="utf-8") as f:
+    file_exists = os.path.exists(args.output) and os.path.getsize(args.output) > 0
+
+    with open(args.output, "a", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=["Business Name", "Website", "Emails", "Mobile Numbers"])
-        writer.writeheader()
+        if not file_exists:
+            writer.writeheader()
         writer.writerows(results)
 
-    print(f"\nDone. Wrote {len(results)} leads to {args.output}.")
+    print(f"\nDone. Appended {len(results)} leads to {args.output}.")
 
 
 if __name__ == "__main__":
